@@ -2,48 +2,53 @@ package machine
 
 import (
 	"errors"
+	"sync"
 )
 
-type state[A, S comparable] struct {
-	transitions map[A]S
+type state[E, S comparable] struct {
+	transitions map[E]S
 }
 
-// Transition describes what Input Action can transition a State From and To
-// An optional Output Action can also be set
-type Transition[A, S comparable] struct {
-	Input A
+// Transition describes what Input Event can transition a State the current State and To
+type Transition[E, S comparable] struct {
+	Event E
 	To    S
 }
 
-type Transitions[A, S comparable] []Transition[A, S]
+type Transitions[E, S comparable] []Transition[E, S]
 
 // StateMap describes a State's possible Transitions
-type StateMap[A, S comparable] struct {
+type StateMap[E, S comparable] struct {
 	Name        S
-	Transitions Transitions[A, S]
+	Transitions Transitions[E, S]
 }
 
 // States is a slice of States and it's possible Transitions
-type States[A, S comparable] []StateMap[A, S]
+type States[E, S comparable] []StateMap[E, S]
 
-type Machine[A, S comparable] struct {
-	name   string
-	states map[S]state[A, S]
+type Machine[E, S comparable] struct {
+	states map[S]state[E, S]
+
+	// mu protects the values below
+	mu      sync.Mutex
+	current S
 }
 
-func NewMachine[A, S comparable](name string, states States[A, S]) *Machine[A, S] {
-	machine := &Machine[A, S]{
-		name:   name,
-		states: make(map[S]state[A, S]),
+// NewMachine creates a new Finite State Machine
+func NewMachine[E, S comparable](current S, states States[E, S]) *Machine[E, S] {
+	machine := &Machine[E, S]{
+		states:  make(map[S]state[E, S]),
+		current: current,
+		mu:      sync.Mutex{},
 	}
 
 	for _, s := range states {
-		st := state[A, S]{
-			transitions: make(map[A]S),
+		st := state[E, S]{
+			transitions: make(map[E]S),
 		}
 
 		for _, t := range s.Transitions {
-			st.transitions[t.Input] = t.To
+			st.transitions[t.Event] = t.To
 		}
 
 		machine.states[s.Name] = st
@@ -52,24 +57,39 @@ func NewMachine[A, S comparable](name string, states States[A, S]) *Machine[A, S
 	return machine
 }
 
-func (m *Machine[A, S]) next(current S, action A) (S, error) {
-	next, ok := m.states[current].transitions[action]
+// Transition takes the provided event and attempts to transition to the next State
+// If successfully it'll return the new State
+// If the current state can not be transitioned an error will be returned
+func (m *Machine[E, S]) Transition(event E) (S, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	next, ok := m.states[m.current].transitions[event]
 	if !ok {
 		return *new(S), errors.New("cannot transition")
 	}
 
+	m.current = next
+
 	return next, nil
 }
 
-func (m *Machine[A, S]) Transition(state S, action A) (S, error) {
-	return m.next(state, action)
-}
+// CanTransition checks to see whether the current State can be transitioned to another State
+func (m *Machine[A, S]) CanTransition() (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
-func (m *Machine[A, S]) CanTransition(state S) (bool, error) {
-	next, ok := m.states[state]
+	next, ok := m.states[m.current]
 	if !ok {
 		return false, errors.New("unknown state")
 	}
 
 	return len(next.transitions) > 0, nil
+}
+
+// State returns the current state of the machine
+func (m *Machine[E, S]) State() S {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.current
 }
